@@ -33,7 +33,10 @@ def analyse_file(path: Path):
         "errors": [],
         "last_file": path.name,
     })
+    snapshot_created = False
     try:
+        store.snapshot_current_run()
+        snapshot_created = True
         store.clear_all()
         buffer = []
         for line_no, line in stream_lines(path):
@@ -70,6 +73,7 @@ def analyse_file(path: Path):
         incidents = correlator.incidents()
         store.save_incidents(incidents)
         elapsed = max(time.perf_counter() - start, 0.001)
+        store.discard_current_run_snapshot()
         status.update({
             "state": "complete",
             "detections": detection_count,
@@ -79,6 +83,11 @@ def analyse_file(path: Path):
         })
         return status
     except Exception as exc:
+        if snapshot_created:
+            try:
+                store.restore_current_run()
+            except Exception:
+                logger.exception("Failed to restore previous investigation after processing error")
         elapsed = max(time.perf_counter() - start, 0.001)
         logger.exception("Ingestion processing failed for %s", path.name)
         status.update({
