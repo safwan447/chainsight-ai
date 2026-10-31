@@ -64,8 +64,20 @@ class Storage:
                     detection=Detection(detection_id=row[0],event_id=row[1],rule_id=row[2],rule_name=row[3],severity=row[4],technique_id=row[5],technique_name=row[6],tactic=row[7],confidence=row[8],evidence=json.loads(row[9]) if isinstance(row[9],str) else row[9])
                     batch.append((detection,self._event_from_row(row[10:])))
                 yield batch
+    def add_incident_events(self, members):
+        """Insert incident/event memberships in one batch, ignoring duplicates."""
+        rows = [(incident_id, event_id) for incident_id, event_id in members
+                if incident_id and event_id]
+        if not rows:
+            return
+        with self.connect() as db:
+            db.executemany(
+                "INSERT OR IGNORE INTO incident_events VALUES (?,?)",
+                rows,
+            )
+
     def add_incident_event(self, incident_id, event_id):
-        with self.connect() as db: db.execute("INSERT OR IGNORE INTO incident_events VALUES (?,?)",[incident_id,event_id])
+        self.add_incident_events([(incident_id, event_id)])
     def merge_incidents(self, source_id, target_id):
         with self.connect() as db: db.execute("UPDATE incident_events SET incident_id=? WHERE incident_id=?",[target_id,source_id])
     def save_incidents(self, incidents):
