@@ -72,6 +72,30 @@ class DiskBackedStreamingCorrelator(StreamingCorrelator):
         self.graph.clear()
         self.all_detections.clear()
 
+    def _expire(self, current_time) -> None:
+        cutoff = current_time - self.window
+        while self.arrival_queue and self.arrival_queue[0][0] < cutoff:
+            _, old_id = self.arrival_queue.popleft()
+            old_item = self.active_detections.pop(old_id, None)
+            if not old_item:
+                continue
+            _, old_event = old_item
+            indexed_values = (
+                (self.by_host, old_event.host.lower() if old_event.host else None),
+                (self.by_ip, old_event.source_ip),
+                (self.by_ip, old_event.destination_ip),
+                (self.by_domain, old_event.domain.lower() if old_event.domain else None),
+                (self.by_reg, old_event.registry_path.lower() if old_event.registry_path else None),
+            )
+            for index, value in indexed_values:
+                if not value:
+                    continue
+                bucket = index.get(value)
+                if bucket is not None:
+                    bucket.discard(old_id)
+                    if not bucket:
+                        index.pop(value, None)
+
     def add(self, detection: Detection, event: NormalizedEvent) -> str:
         self._expire(event.timestamp)
 
