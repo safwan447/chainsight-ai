@@ -76,7 +76,7 @@ class StreamingCorrelator:
 
     @staticmethod
     def _keys(event):
-        keys = []
+        keys = [("event", event.event_id)] if event.event_id else []
         # A host alone, public IP, user alone, or domain alone is not enough.
         if event.host and event.user:
             keys.append(("host_user", event.host.casefold(), event.user.casefold()))
