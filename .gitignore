@@ -218,3 +218,21 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ChainSight AI
+data/*
+!data/.gitkeep
+*.json
+.env
+
+# Tracked project configuration (the broad JSON rule above is for local telemetry).
+!rules/detection_rules.json
+!frontend/package.json
+!frontend/tsconfig.json
+
+# ChainSight local runtime artifacts
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+data/*.duckdb
+data/*.parquet

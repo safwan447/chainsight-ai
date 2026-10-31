@@ -1,0 +1,5 @@
+from html import escape
+def report(incident,events,detections,reachability):
+    payload={"incident":incident.model_dump(mode="json"),"timeline":[e.model_dump(mode="json",exclude={"raw_event"}) for e in events],"detections":[d.model_dump() for d in detections],"potential_reachability":reachability,"recommended_steps":["Validate evidence against source telemetry and asset context.","Contain only after analyst review and according to incident response policy.","Review related authentication, process, and network activity in the stated time window."]}
+    html=f"<!doctype html><title>ChainSight report</title><style>body{{font:15px Arial;max-width:900px;margin:40px;color:#172033}}h1{{color:#0a5878}}pre{{white-space:pre-wrap;background:#f2f5f7;padding:16px}}</style><h1>ChainSight AI Incident Report</h1><p>Evidence-backed defensive investigation summary. Potential reachability does not indicate compromise.</p><h2>{escape(incident.incident_id)} · {escape(incident.risk_label)} ({incident.risk_score}/100)</h2><pre>{escape(__import__('json').dumps(payload,indent=2,default=str))}</pre>"
+    return payload,html
