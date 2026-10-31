@@ -23,6 +23,33 @@ class Storage:
         """Start a new investigation safely instead of silently mixing source datasets."""
         with self.connect() as db:
             db.execute("DELETE FROM events"); db.execute("DELETE FROM detections"); db.execute("DELETE FROM incidents"); db.execute("DELETE FROM incident_events")
+    def snapshot_current_run(self):
+        """Create recoverable copies of the current investigation tables."""
+        with self.connect() as db:
+            for table in ("events", "detections", "incidents", "incident_events"):
+                backup = f"_chainsight_backup_{table}"
+                db.execute(f"DROP TABLE IF EXISTS {backup}")
+                db.execute(f"CREATE TABLE {backup} AS SELECT * FROM {table}")
+
+    def restore_current_run(self):
+        """Restore the last snapshot after a failed replacement run."""
+        with self.connect() as db:
+            for table in ("events", "detections", "incidents", "incident_events"):
+                backup = f"_chainsight_backup_{table}"
+                exists = db.execute(
+                    "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?",
+                    [backup],
+                ).fetchone()[0]
+                if exists:
+                    db.execute(f"DELETE FROM {table}")
+                    db.execute(f"INSERT INTO {table} SELECT * FROM {backup}")
+                    db.execute(f"DROP TABLE {backup}")
+
+    def discard_current_run_snapshot(self):
+        with self.connect() as db:
+            for table in ("events", "detections", "incidents", "incident_events"):
+                db.execute(f"DROP TABLE IF EXISTS _chainsight_backup_{table}")
+
     def insert_events(self, events):
         rows = [(e.event_id,e.timestamp,e.event_kind,e.category,e.action,e.severity,e.host,e.source_ip,e.destination_ip,e.user,e.process_name,e.process_id,e.parent_process,e.command_line,e.file_path,e.registry_path,e.domain,e.technique_id,e.technique_name,e.tactic,json.dumps(e.raw_event)) for e in events]
         if rows:
