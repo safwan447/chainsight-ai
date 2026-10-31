@@ -66,6 +66,7 @@ class DiskBackedStreamingCorrelator(StreamingCorrelator):
             CREATE TABLE component_members (detection_id TEXT PRIMARY KEY);
             """
         )
+        self._pending_writes = 0
         self._db.commit()
         # The base class fields are retained for active-window indexes only.
         self.graph.clear()
@@ -108,7 +109,10 @@ class DiskBackedStreamingCorrelator(StreamingCorrelator):
                 event.model_dump_json(),
             ),
         )
-        self._db.commit()
+        self._pending_writes += 1
+        if self._pending_writes >= 1_000:
+            self._db.commit()
+            self._pending_writes = 0
 
         self.active_detections[detection.detection_id] = (detection, event)
         if event.host:
@@ -134,6 +138,10 @@ class DiskBackedStreamingCorrelator(StreamingCorrelator):
 
     def remember_event_id(self, event_id: str) -> None:
         self._db.execute("INSERT OR IGNORE INTO seen_event_ids VALUES (?)", (event_id,))
+        self._pending_writes += 1
+        if self._pending_writes >= 1_000:
+            self._db.commit()
+            self._pending_writes = 0
 
     def _load_pair(self, detection_id: str) -> tuple[Detection, NormalizedEvent]:
         row = self._db.execute(
@@ -146,6 +154,8 @@ class DiskBackedStreamingCorrelator(StreamingCorrelator):
 
     def incidents(self) -> list[Incident]:
         """Reconstruct connected components using disk-backed frontier/visited tables."""
+        self._db.commit()
+        self._pending_writes = 0
         incidents: list[Incident] = []
         seeds = self._db.execute(
             "SELECT detection_id FROM detections ORDER BY timestamp, detection_id"
