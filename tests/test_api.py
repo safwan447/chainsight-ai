@@ -13,7 +13,7 @@ def _write_api_sample(directory: Path) -> Path:
         '{"event_id":"api-event-1","timestamp":"2026-01-01T10:00:00Z",'
         '"category":"process","host":"WS-API","user":"alice",'
         '"process_name":"powershell.exe","parent_process":"winword.exe",'
-        '"command_line":"powershell.exe -enc test-payload"}\\n',
+        '"command_line":"powershell.exe -enc test-payload"}\n',
         encoding="utf-8",
     )
     return sample
