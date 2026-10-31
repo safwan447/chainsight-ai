@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import json
+import hashlib
 import os
 import sqlite3
 import tempfile
-from collections import defaultdict
-from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
@@ -63,6 +61,7 @@ class DiskBackedStreamingCorrelator(StreamingCorrelator):
             );
             CREATE INDEX idx_corr_edges_target ON edges(target_id);
             CREATE TABLE visited (detection_id TEXT PRIMARY KEY);
+            CREATE TABLE seen_event_ids (event_id TEXT PRIMARY KEY);
             CREATE TABLE frontier (detection_id TEXT PRIMARY KEY);
             CREATE TABLE component_members (detection_id TEXT PRIMARY KEY);
             """
@@ -129,6 +128,12 @@ class DiskBackedStreamingCorrelator(StreamingCorrelator):
         if self.member_sink:
             self.member_sink(incident_id, event.event_id)
         return incident_id
+
+    def has_event_id(self, event_id: str) -> bool:
+        return self._db.execute("SELECT 1 FROM seen_event_ids WHERE event_id = ?", (event_id,)).fetchone() is not None
+
+    def remember_event_id(self, event_id: str) -> None:
+        self._db.execute("INSERT OR IGNORE INTO seen_event_ids VALUES (?)", (event_id,))
 
     def _load_pair(self, detection_id: str) -> tuple[Detection, NormalizedEvent]:
         row = self._db.execute(
@@ -209,7 +214,7 @@ class DiskBackedStreamingCorrelator(StreamingCorrelator):
 
             if state is not None:
                 sorted_event_ids = sorted(state.event_ids)
-                id_hash = __import__("hashlib").sha256(
+                id_hash = hashlib.sha256(
                     "|".join(sorted_event_ids).encode()
                 ).hexdigest()[:8].upper()
                 state.incident_id = f"INC-{id_hash}"
