@@ -217,13 +217,15 @@ def analyse_file(path: Path) -> dict[str, Any]:
         store.save_incidents(incidents)
 
         # Map each event in each incident's evidence_event_ids to the final incident_id
-        final_members: list[tuple[str, str]] = []
+        member_batch: list[tuple[str, str]] = []
         for inc in incidents:
             for ev_id in inc.evidence_event_ids:
-                final_members.append((inc.incident_id, ev_id))
-
-        if final_members:
-            store.add_incident_events(final_members)
+                member_batch.append((inc.incident_id, ev_id))
+                if len(member_batch) >= CHUNK_SIZE:
+                    store.add_incident_events(member_batch)
+                    member_batch.clear()
+        if member_batch:
+            store.add_incident_events(member_batch)
 
         # 4. Finalize metrics
         elapsed = max(time.perf_counter() - start_time, 0.001)
