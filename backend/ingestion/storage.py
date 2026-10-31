@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 import duckdb
-from backend.config import DB_PATH
+from backend.config import DB_PATH, DUCKDB_MEMORY_LIMIT, DUCKDB_THREADS, DUCKDB_TEMP_DIR
 from backend.models import Detection, Incident, NormalizedEvent
 
 EVENT_COLUMNS = [
@@ -41,6 +41,7 @@ class Storage:
     def __init__(self, path: Path = DB_PATH):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        DUCKDB_TEMP_DIR.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._db: duckdb.DuckDBPyConnection | None = None
         self.initialize()
@@ -52,6 +53,11 @@ class Storage:
         with self._lock:
             if self._db is None:
                 self._db = duckdb.connect(str(self.path))
+                # Cap DuckDB's working memory and allow eligible intermediates to spill to SSD.
+                self._db.execute(f\"SET memory_limit = '{DUCKDB_MEMORY_LIMIT.replace(chr(39), chr(39) * 2)}'\")
+                self._db.execute(f\"SET threads = {DUCKDB_THREADS}\")
+                temp_path = str(DUCKDB_TEMP_DIR.resolve()).replace(chr(39), chr(39) * 2)
+                self._db.execute(f\"SET temp_directory = '{temp_path}'\")
             return self._db
 
     def close(self) -> None:
