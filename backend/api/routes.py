@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, shutil, time
+import json, shutil, time, logging
 from pathlib import Path
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -12,32 +12,94 @@ from backend.correlation.correlator import StreamingCorrelator
 from backend.graph.attack_graph import build_graph, reachability
 from backend.reporting.incident_report import report
 
+logger = logging.getLogger(__name__)
 router=APIRouter(prefix="/api")
 store=Storage(); status={"state":"idle","demo_data":False,"total_records":0,"valid_records":0,"invalid_records":0,"detections":0,"incidents":0,"duration_seconds":0,"throughput_eps":0,"last_file":None,"errors":[]}
 
 def _severity_rank(value): return {"informational":0,"low":1,"medium":2,"high":3,"critical":4}.get(value,0)
 def analyse_file(path: Path):
     global status
-    start=time.perf_counter(); status.update({"state":"processing","demo_data":"synthetic" in path.name.lower() or path.name.lower().startswith("edr_"),"total_records":0,"valid_records":0,"invalid_records":0,"errors":[],"last_file":path.name})
-    store.clear_all()
-    buffer=[]
-    for line_no,line in stream_lines(path):
-        status["total_records"]+=1
-        try: buffer.append(normalize(parse_line(line))); status["valid_records"]+=1
-        except Exception as exc:
-            status["invalid_records"]+=1
-            if len(status["errors"])<10: status["errors"].append(f"Line {line_no}: {exc}")
-        if len(buffer)>=CHUNK_SIZE: store.insert_events(buffer); buffer.clear()
-    store.insert_events(buffer); store.reset_analysis(); engine=DetectionEngine(); detection_count=0
-    for event_batch in store.iter_events(CHUNK_SIZE):
-        detections=engine.detect_batch(event_batch); store.save_detections(detections); detection_count+=len(detections)
-    correlator=StreamingCorrelator(); members=[]
-    for detected_batch in store.iter_detection_events(CHUNK_SIZE):
-        for detection,event in detected_batch: members.append((correlator.add(detection,event),event.event_id))
-        store.add_incident_events([(incident_id,event_id) for incident_id,event_id in members if incident_id]); members.clear()
-    incidents=correlator.incidents(); store.save_incidents(incidents)
-    elapsed=max(time.perf_counter()-start,.001); status.update({"state":"complete","detections":detection_count,"incidents":len(incidents),"duration_seconds":round(elapsed,3),"throughput_eps":round(status["total_records"]/elapsed,1)})
-    return status
+    start = time.perf_counter()
+    status.update({
+        "state": "processing",
+        "demo_data": "synthetic" in path.name.lower() or path.name.lower().startswith("edr_"),
+        "total_records": 0,
+        "valid_records": 0,
+        "invalid_records": 0,
+        "detections": 0,
+        "incidents": 0,
+        "duration_seconds": 0,
+        "throughput_eps": 0,
+        "errors": [],
+        "last_file": path.name,
+    })
+    snapshot_created = False
+    try:
+        store.snapshot_current_run()
+        snapshot_created = True
+        store.clear_all()
+        buffer = []
+        for line_no, line in stream_lines(path):
+            status["total_records"] += 1
+            try:
+                buffer.append(normalize(parse_line(line)))
+                status["valid_records"] += 1
+            except Exception as exc:
+                status["invalid_records"] += 1
+                if len(status["errors"]) < 10:
+                    status["errors"].append(f"Line {line_no}: {type(exc).__name__}")
+            if len(buffer) >= CHUNK_SIZE:
+                store.insert_events(buffer)
+                buffer.clear()
+
+        store.insert_events(buffer)
+        store.reset_analysis()
+        engine = DetectionEngine()
+        detection_count = 0
+        for event_batch in store.iter_events(CHUNK_SIZE):
+            detections = engine.detect_batch(event_batch)
+            store.save_detections(detections)
+            detection_count += len(detections)
+
+        correlator = StreamingCorrelator()
+        for detected_batch in store.iter_detection_events(CHUNK_SIZE):
+            members = []
+            for detection, event in detected_batch:
+                incident_id = correlator.add(detection, event)
+                if incident_id:
+                    members.append((incident_id, event.event_id))
+            store.add_incident_events(members)
+
+        incidents = correlator.incidents()
+        store.save_incidents(incidents)
+        elapsed = max(time.perf_counter() - start, 0.001)
+        store.discard_current_run_snapshot()
+        status.update({
+            "state": "complete",
+            "detections": detection_count,
+            "incidents": len(incidents),
+            "duration_seconds": round(elapsed, 3),
+            "throughput_eps": round(status["total_records"] / elapsed, 1),
+        })
+        return status
+    except Exception as exc:
+        if snapshot_created:
+            try:
+                store.restore_current_run()
+            except Exception:
+                logger.exception("Failed to restore previous investigation after processing error")
+        elapsed = max(time.perf_counter() - start, 0.001)
+        logger.exception("Ingestion processing failed for %s", path.name)
+        status.update({
+            "state": "error",
+            "duration_seconds": round(elapsed, 3),
+            "throughput_eps": round(status["total_records"] / elapsed, 1),
+            "errors": (status.get("errors", []) + [f"Processing failed: {type(exc).__name__}"])[:10],
+        })
+        raise HTTPException(
+            status_code=500,
+            detail="Processing failed. Check /api/ingest/status for the error summary.",
+        ) from exc
 
 @router.get("/health")
 def health(): return {"status":"ok","service":"ChainSight AI","offline":True}

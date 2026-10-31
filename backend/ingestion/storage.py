@@ -23,6 +23,33 @@ class Storage:
         """Start a new investigation safely instead of silently mixing source datasets."""
         with self.connect() as db:
             db.execute("DELETE FROM events"); db.execute("DELETE FROM detections"); db.execute("DELETE FROM incidents"); db.execute("DELETE FROM incident_events")
+    def snapshot_current_run(self):
+        """Create recoverable copies of the current investigation tables."""
+        with self.connect() as db:
+            for table in ("events", "detections", "incidents", "incident_events"):
+                backup = f"_chainsight_backup_{table}"
+                db.execute(f"DROP TABLE IF EXISTS {backup}")
+                db.execute(f"CREATE TABLE {backup} AS SELECT * FROM {table}")
+
+    def restore_current_run(self):
+        """Restore the last snapshot after a failed replacement run."""
+        with self.connect() as db:
+            for table in ("events", "detections", "incidents", "incident_events"):
+                backup = f"_chainsight_backup_{table}"
+                exists = db.execute(
+                    "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?",
+                    [backup],
+                ).fetchone()[0]
+                if exists:
+                    db.execute(f"DELETE FROM {table}")
+                    db.execute(f"INSERT INTO {table} SELECT * FROM {backup}")
+                    db.execute(f"DROP TABLE {backup}")
+
+    def discard_current_run_snapshot(self):
+        with self.connect() as db:
+            for table in ("events", "detections", "incidents", "incident_events"):
+                db.execute(f"DROP TABLE IF EXISTS _chainsight_backup_{table}")
+
     def insert_events(self, events):
         rows = [(e.event_id,e.timestamp,e.event_kind,e.category,e.action,e.severity,e.host,e.source_ip,e.destination_ip,e.user,e.process_name,e.process_id,e.parent_process,e.command_line,e.file_path,e.registry_path,e.domain,e.technique_id,e.technique_name,e.tactic,json.dumps(e.raw_event)) for e in events]
         if rows:
@@ -64,8 +91,20 @@ class Storage:
                     detection=Detection(detection_id=row[0],event_id=row[1],rule_id=row[2],rule_name=row[3],severity=row[4],technique_id=row[5],technique_name=row[6],tactic=row[7],confidence=row[8],evidence=json.loads(row[9]) if isinstance(row[9],str) else row[9])
                     batch.append((detection,self._event_from_row(row[10:])))
                 yield batch
+    def add_incident_events(self, members):
+        """Insert incident/event memberships in one batch, ignoring duplicates."""
+        rows = [(incident_id, event_id) for incident_id, event_id in members
+                if incident_id and event_id]
+        if not rows:
+            return
+        with self.connect() as db:
+            db.executemany(
+                "INSERT OR IGNORE INTO incident_events VALUES (?,?)",
+                rows,
+            )
+
     def add_incident_event(self, incident_id, event_id):
-        with self.connect() as db: db.execute("INSERT OR IGNORE INTO incident_events VALUES (?,?)",[incident_id,event_id])
+        self.add_incident_events([(incident_id, event_id)])
     def merge_incidents(self, source_id, target_id):
         with self.connect() as db: db.execute("UPDATE incident_events SET incident_id=? WHERE incident_id=?",[target_id,source_id])
     def save_incidents(self, incidents):
