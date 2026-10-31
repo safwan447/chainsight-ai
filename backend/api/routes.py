@@ -11,7 +11,7 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from backend.config import CHUNK_SIZE, CORRELATION_WINDOW_MINUTES, DATA_DIR, ROOT
-from backend.correlation.correlator import StreamingCorrelator
+from backend.correlation.disk_backed import DiskBackedStreamingCorrelator
 from backend.detection.engine import DetectionEngine
 from backend.graph.attack_graph import build_graph, reachability
 from backend.ingestion.parser import detect_format, normalize, parse_line
@@ -101,14 +101,13 @@ def analyse_file(path: Path) -> dict[str, Any]:
 
         # Initialize detection engine and correlator
         engine = DetectionEngine()
-        correlator = StreamingCorrelator(window_minutes=CORRELATION_WINDOW_MINUTES)
+        correlator = DiskBackedStreamingCorrelator(window_minutes=CORRELATION_WINDOW_MINUTES, temp_dir=DATA_DIR)
 
         event_buffer = []
         detection_buffer = []
-        seen_event_ids: set[str] = set()
+        # Event IDs are tracked in the correlator's temporary disk database, not a RAM set.
         source_format: str | None = None
         total_detections = 0
-        incident_members: list[tuple[str, str]] = []
 
         # 1. Stream file records in buffered chunks
         for line_no, line in stream_lines(path):
@@ -132,14 +131,14 @@ def analyse_file(path: Path) -> dict[str, Any]:
                 event = normalize(raw_record, line_no=line_no)
 
                 # Ensure event_id uniqueness to prevent primary key collisions while preserving identity
-                if event.event_id in seen_event_ids:
+                original_id = event.event_id
+                if correlator.has_event_id(original_id):
                     current_status["duplicate_records"] += 1
-                    # Disambiguate unique stored key while preserving original ID reference
-                    original_id = event.event_id
+                    # Keep duplicate rows without overwriting the first event, but remember original identity.
                     event.raw_event["_original_event_id"] = original_id
                     event.event_id = f"{original_id}#dup{line_no}"
-
-                seen_event_ids.add(event.event_id)
+                else:
+                    correlator.remember_event_id(original_id)
                 event_buffer.append(event)
                 current_status["valid_records"] += 1
 
@@ -160,7 +159,6 @@ def analyse_file(path: Path) -> dict[str, Any]:
                     matching_event = event_map.get(det.event_id)
                     if matching_event:
                         inc_id = correlator.add(det, matching_event)
-                        incident_members.append((inc_id, matching_event.event_id))
 
                 total_detections += len(batch_detections)
                 current_status["detections"] = total_detections
@@ -193,7 +191,6 @@ def analyse_file(path: Path) -> dict[str, Any]:
                 matching_event = event_map.get(det.event_id)
                 if matching_event:
                     inc_id = correlator.add(det, matching_event)
-                    incident_members.append((inc_id, matching_event.event_id))
 
             total_detections += len(batch_detections)
             current_status["detections"] = total_detections
@@ -220,13 +217,15 @@ def analyse_file(path: Path) -> dict[str, Any]:
         store.save_incidents(incidents)
 
         # Map each event in each incident's evidence_event_ids to the final incident_id
-        final_members: list[tuple[str, str]] = []
+        member_batch: list[tuple[str, str]] = []
         for inc in incidents:
             for ev_id in inc.evidence_event_ids:
-                final_members.append((inc.incident_id, ev_id))
-
-        if final_members:
-            store.add_incident_events(final_members)
+                member_batch.append((inc.incident_id, ev_id))
+                if len(member_batch) >= CHUNK_SIZE:
+                    store.add_incident_events(member_batch)
+                    member_batch.clear()
+        if member_batch:
+            store.add_incident_events(member_batch)
 
         # 4. Finalize metrics
         elapsed = max(time.perf_counter() - start_time, 0.001)
@@ -252,6 +251,8 @@ def analyse_file(path: Path) -> dict[str, Any]:
         raise
 
     finally:
+        if 'correlator' in locals() and correlator is not None:
+            correlator.close()
         ingestion_lock.release()
 
 

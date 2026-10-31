@@ -6,6 +6,19 @@ from backend.main import app
 from backend.api.routes import store, ingestion_lock, current_status
 
 
+def _write_api_sample(directory: Path) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    sample = directory / "edr_events.json"
+    sample.write_text(
+        '{"event_id":"api-event-1","timestamp":"2026-01-01T10:00:00Z",'
+        '"category":"process","host":"WS-API","user":"alice",'
+        '"process_name":"powershell.exe","parent_process":"winword.exe",'
+        '"command_line":"powershell.exe -enc test-payload"}\n',
+        encoding="utf-8",
+    )
+    return sample
+
+
 def test_health_endpoint():
     client = TestClient(app)
     response = client.get("/api/health")
@@ -23,8 +36,10 @@ def test_missing_filename_is_rejected():
     assert "explicitly provided" in response.json()["detail"].lower()
 
 
-def test_concurrent_ingestion_rejection():
+def test_concurrent_ingestion_rejection(tmp_path, monkeypatch):
     """Ensure a second ingestion request is rejected with 409 Conflict while another is running."""
+    monkeypatch.setattr("backend.api.routes.DATA_DIR", tmp_path)
+    _write_api_sample(tmp_path)
     client = TestClient(app)
     acquired = ingestion_lock.acquire(blocking=False)
     assert acquired is True
@@ -59,8 +74,10 @@ def test_backend_restart_recovery(tmp_path):
     restarted_storage.close()
 
 
-def test_end_to_end_processing_and_dashboard_consistency(tmp_path):
+def test_end_to_end_processing_and_dashboard_consistency(tmp_path, monkeypatch):
     """End-to-end processing test validating counts, detections, incidents, and relationships."""
+    monkeypatch.setattr("backend.api.routes.DATA_DIR", tmp_path)
+    _write_api_sample(tmp_path)
     client = TestClient(app)
 
     # Ingest synthetic edr_events.json
